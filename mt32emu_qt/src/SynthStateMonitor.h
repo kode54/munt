@@ -25,12 +25,16 @@ private:
 	QLabel *partialStateLabel[32];
 	QLabel *patchNameLabel[9];
 	QLabel *polyStateLabel[9];
+	QTimer timer;
+	int polyState[32];
+	int partialState[32];
 
 private slots:
 	void handleReset();
 	void handlePolyStateChanged(int partNum);
 	void handlePartialStateChanged(int partialNum, int partialState);
 	void handleProgramChanged(int partNum, QString patchName);
+	void handleUpdate();
 };
 
 #endif

@@ -42,6 +42,11 @@ SynthStateMonitor::SynthStateMonitor(Ui::SynthWidget *ui, SynthRoute *useSynthRo
 	}
 
 	qsynth = synthRoute->findChild<QSynth *>();
+	handleReset();
+	connect(qsynth, SIGNAL(partStateReset()), SLOT(handleReset()));
+	connect(qsynth->findChild<QReportHandler *>(), SIGNAL(programChanged(int, QString)), SLOT(handleProgramChanged(int, QString)));
+	connect(&timer, SIGNAL(timeout()), SLOT(handleUpdate()));
+	timer.start(30);
 }
 
 SynthStateMonitor::~SynthStateMonitor() {
@@ -53,16 +58,10 @@ SynthStateMonitor::~SynthStateMonitor() {
 }
 
 void SynthStateMonitor::connectSignals(bool enable) {
-	QReportHandler *handler = qsynth->findChild<QReportHandler *>();
 	if (enable) {
-		connect(qsynth, SIGNAL(partStateReset()), SLOT(handleReset()));
-		connect(handler, SIGNAL(polyStateChanged(int)), SLOT(handlePolyStateChanged(int)));
-		connect(handler, SIGNAL(partialStateChanged(int, int)), SLOT(handlePartialStateChanged(int, int)));
-		connect(handler, SIGNAL(programChanged(int, QString)), SLOT(handleProgramChanged(int, QString)));
-		handleReset();
+		timer.start();
 	} else {
-		disconnect(qsynth, 0, this, 0);
-		disconnect(handler, 0, this, 0);
+		timer.stop();
 	}
 }
 
@@ -71,6 +70,8 @@ void SynthStateMonitor::handleReset() {
 	partialLED.fill(partialStateColor[PartialState_DEAD]);
 	for (int i = 0; i < 32; i++) {
 		partialStateLabel[i]->setPixmap(partialLED);
+		partialState[i] = 0;
+		polyState[i] = 0;
 	}
 	QPixmap polyBar(480, 16);
 	polyBar.fill(colorGrey);
@@ -105,4 +106,42 @@ void SynthStateMonitor::handlePartialStateChanged(int partialNum, int partialSta
 
 void SynthStateMonitor::handleProgramChanged(int partNum, QString patchName) {
 	patchNameLabel[partNum]->setText(patchName);
+}
+
+void SynthStateMonitor::handleUpdate() {
+	static const int partialPhaseToState[8] = {
+		PartialState_ATTACK, PartialState_ATTACK, PartialState_ATTACK, PartialState_ATTACK,
+		PartialState_SUSTAINED, PartialState_SUSTAINED, PartialState_RELEASED, PartialState_DEAD
+	};
+
+	if (!ui->detailsFrame->isVisible() || synthRoute->getState() != SynthRouteState_OPEN) return;
+	bool partUpdated[9] = {false};
+	for (int i = 0; i < 32; i++) {
+		const MT32Emu::Partial *partial = qsynth->getPartial(i);
+		int newState = partial->isActive() ? partialPhaseToState[partial->tva->getPhase()] : PartialState_DEAD;
+		if (partialState[i] != newState) {
+			handlePartialStateChanged(i, newState);
+			partialState[i] = newState;
+		}
+		uchar part;
+		uchar key;
+		uchar velocity;
+		if (partial->isActive()) {
+			part = partial->getOwnerPart();
+			key = partial->getPoly()->getKey();
+			velocity = partial->getPoly()->getVelocity();
+		} else {
+			part = polyState[i] & 0xFF;
+			key = (polyState[i] >> 8) & 0xFF;
+			velocity = 0;
+		}
+		newState = part | (key << 8) | (velocity << 16);
+		if (polyState[i] != newState) {
+			partUpdated[part] = true;
+			polyState[i] = newState;
+		}
+	}
+	for (int i = 0; i < 9; i++) {
+		if (partUpdated[i]) handlePolyStateChanged(i);
+	}
 }
