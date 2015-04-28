@@ -28,7 +28,7 @@ private:
 	Part **parts;
 	Poly **freePolys;
 	Partial **partialTable;
-	Bit8u numReservedPartialsForPart[9];
+	Bit8u numReservedPartialsForPart[16];
 	Bit32u firstFreePolyIndex;
 
 	bool abortFirstReleasingPolyWhereReserveExceeded(int minPart);

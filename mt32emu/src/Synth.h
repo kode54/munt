@@ -44,6 +44,7 @@ class ResetMemoryRegion;
 struct ControlROMMap;
 struct PCMWaveEntry;
 struct MemParams;
+struct TimbreParam;
 
 /**
  * Methods for emulating the connection between the LA32 and the DAC, which involves
@@ -203,6 +204,11 @@ private:
 
 	MemParams &mt32ram, &mt32default;
 
+	// Super!
+	Bit8u chanAssignSuper[7];
+	void * patchTempSuper;
+	void * timbreTempSuper;
+
 	BReverbModel *reverbModels[4];
 	BReverbModel *reverbModel;
 	bool reverbOverridden;
@@ -216,12 +222,13 @@ private:
 	bool reversedStereoEnabled;
 
 	bool isOpen;
+	bool useSuper;
 
 	bool isDefaultReportHandler;
 	ReportHandler *reportHandler;
 
 	PartialManager *partialManager;
-	Part *parts[9];
+	Part *parts[16];
 
 	// When a partial needs to be aborted to free it up for use by a new Poly,
 	// the controller will busy-loop waiting for the sound to finish.
@@ -310,7 +317,8 @@ public:
 	// controlROMImage and pcmROMImage represent Control and PCM ROM images for use by synth.
 	// usePartialCount sets the maximum number of partials playing simultaneously for this session (optional).
 	// analogOutputMode sets the mode for emulation of analogue circuitry of the hardware units (optional).
-	bool open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, unsigned int usePartialCount = DEFAULT_MAX_PARTIALS, AnalogOutputMode analogOutputMode = AnalogOutputMode_COARSE);
+	// useSuper enables the "super" synthesis mode, which adds virtual channels to map up to 16 with spare partials
+	bool open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, unsigned int usePartialCount = DEFAULT_MAX_PARTIALS, AnalogOutputMode analogOutputMode = AnalogOutputMode_COARSE, bool useSuper = false);
 
 	// Overloaded method which opens the synth with default partial count.
 	bool open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, AnalogOutputMode analogOutputMode);
@@ -421,6 +429,9 @@ public:
 
 	// Returns true if hasActivePartials() returns true, or reverb is (somewhat unreliably) detected as being active.
 	bool isActive() const;
+
+	// Returns if in Super mode
+	bool isSuper() const;
 
 	// Returns the maximum number of partials playing simultaneously.
 	unsigned int getPartialCount() const;

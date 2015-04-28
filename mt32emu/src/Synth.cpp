@@ -382,15 +382,23 @@ bool Synth::initTimbres(Bit16u mapAddress, Bit16u offset, int count, int startTi
 }
 
 bool Synth::open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, AnalogOutputMode analogOutputMode) {
-	return open(controlROMImage, pcmROMImage, DEFAULT_MAX_PARTIALS, analogOutputMode);
+	return open(controlROMImage, pcmROMImage, DEFAULT_MAX_PARTIALS, analogOutputMode, false);
 }
 
-bool Synth::open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, unsigned int usePartialCount, AnalogOutputMode analogOutputMode) {
+bool Synth::open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, unsigned int usePartialCount, AnalogOutputMode analogOutputMode, bool useSuper) {
 	if (isOpen) {
 		return false;
 	}
+	this->useSuper = useSuper;
 	partialCount = usePartialCount;
 	abortingPoly = NULL;
+    if (useSuper) {
+		patchTempSuper = new MemParams::PatchTemp[7];
+		timbreTempSuper = new TimbreParam[7];
+    } else {
+		patchTempSuper = NULL;
+		timbreTempSuper = NULL;
+    }
 
 	// This is to help detect bugs
 	memset(&mt32ram, '?', sizeof(mt32ram));
@@ -502,6 +510,12 @@ bool Synth::open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, u
 		// The channel assignment is then {0, 1, 2, 3, 4, 5, 6, 7, 9}
 		mt32ram.system.chanAssign[i] = i + 1;
 	}
+	if (useSuper) {
+		chanAssignSuper[0] = !mt32ram.system.chanAssign[0];
+		for (Bit8u i = 1; i < 7; i++) {
+			chanAssignSuper[i] = i + 9;
+		}
+	}
 	mt32ram.system.masterVol = 100; // Confirmed
 
 	bool oldReverbOverridden = reverbOverridden;
@@ -509,8 +523,9 @@ bool Synth::open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, u
 	refreshSystem();
 	reverbOverridden = oldReverbOverridden;
 
-	for (int i = 0; i < 9; i++) {
-		MemParams::PatchTemp *patchTemp = &mt32ram.patchTemp[i];
+	int numParts = useSuper ? 16 : 9;
+	for (int i = 0; i < numParts; i++) {
+        MemParams::PatchTemp *patchTemp = i < 9 ? &mt32ram.patchTemp[i] : (MemParams::PatchTemp *)patchTempSuper + i - 9;
 
 		// Note that except for the rhythm part, these patch fields will be set in setProgram() below anyway.
 		patchTemp->patch.timbreGroup = 0;
@@ -527,9 +542,9 @@ bool Synth::open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, u
 		memset(patchTemp->dummyv, 0, sizeof(patchTemp->dummyv));
 		patchTemp->dummyv[1] = 127;
 
-		if (i < 8) {
+		if (i != 8) {
 			parts[i] = new Part(this, i);
-			parts[i]->setProgram(controlROMData[controlROMMap->programSettings + i]);
+			parts[i]->setProgram(i < 9 ? controlROMData[controlROMMap->programSettings + i] : 0);
 		} else {
 			parts[i] = new RhythmPart(this, i);
 		}
@@ -567,7 +582,8 @@ void Synth::close(bool forced) {
 	delete partialManager;
 	partialManager = NULL;
 
-	for (int i = 0; i < 9; i++) {
+	int numParts = useSuper ? 16 : 9;
+	for (int i = 0; i < numParts; i++) {
 		delete parts[i];
 		parts[i] = NULL;
 	}
@@ -576,6 +592,11 @@ void Synth::close(bool forced) {
 	delete[] pcmROMData;
 
 	deleteMemoryRegions();
+
+    delete[] (MemParams::PatchTemp*)patchTempSuper;
+	delete[] (TimbreParam *)timbreTempSuper;
+	patchTempSuper = NULL;
+	timbreTempSuper = NULL;
 
 	for (int i = 0; i < 4; i++) {
 		delete reverbModels[i];
@@ -688,7 +709,8 @@ void Synth::playMsgNow(Bit32u msg) {
 	//printDebug("Playing chan %d, code 0x%01x note: 0x%02x", chan, code, note);
 
 	char part = chantable[chan];
-	if (part < 0 || part > 8) {
+	int maxPart = useSuper ? 15 : 8;
+	if (part < 0 || part > maxPart) {
 #if MT32EMU_MONITOR_MIDI > 0
 		printDebug("Play msg on unreg chan %d (%d): code=0x%01x, vel=%d", chan, part, code, velocity);
 #endif
@@ -724,6 +746,9 @@ void Synth::playMsgOnPart(unsigned char part, unsigned char code, unsigned char 
 			break;
 		case 0x06:
 			parts[part]->setDataEntryMSB(velocity);
+			break;
+		case 0x26:
+			parts[part]->setDataEntryLSB(velocity);
 			break;
 		case 0x07:  // Set volume
 			//printDebug("Volume set: %d", velocity);
@@ -919,10 +944,15 @@ void Synth::writeSysex(unsigned char device, const Bit8u *sysex, Bit32u len) {
 #endif
 				offset = 0;
 			} else {
-				offset = chantable[device] * sizeof(MemParams::PatchTemp);
+				if (useSuper && chantable[device] > 8) {
+					offset = 0;
+					printDebug(" (Channel mapped to super parts... 0 offset)");
+				} else {
+					offset = chantable[device] * sizeof(MemParams::PatchTemp);
 #if MT32EMU_MONITOR_SYSEX > 0
-				printDebug(" (Setting extra offset to %d)", offset);
+					printDebug(" (Setting extra offset to %d)", offset);
 #endif
+				}
 			}
 			addr += MT32EMU_MEMADDR(0x030000) + offset;
 		} else if (/*addr >= MT32EMU_MEMADDR(0x010000) && */ addr < MT32EMU_MEMADDR(0x020000)) {
@@ -1236,7 +1266,8 @@ void Synth::writeMemoryRegion(const MemoryRegion *region, Bit32u addr, Bit32u le
 #endif
 			// FIXME:KG: Not sure if the stuff below should be done (for rhythm and/or parts)...
 			// Does the real MT-32 automatically do this?
-			for (unsigned int part = 0; part < 9; part++) {
+			unsigned int numParts = useSuper ? 16 : 9;
+			for (unsigned int part = 0; part < numParts; part++) {
 				if (parts[part] != NULL) {
 					parts[part]->refreshTimbre(i);
 				}
@@ -1348,20 +1379,52 @@ void Synth::refreshSystemReserveSettings() {
 #if MT32EMU_MONITOR_SYSEX > 0
 	printDebug(" Partial reserve: 1=%02d 2=%02d 3=%02d 4=%02d 5=%02d 6=%02d 7=%02d 8=%02d Rhythm=%02d", rset[0], rset[1], rset[2], rset[3], rset[4], rset[5], rset[6], rset[7], rset[8]);
 #endif
+	Bit8u rset_[16];
+	if (useSuper) {
+		memcpy(rset_, rset, 9);
+		unsigned int pr = 0, i;
+		for (i = 0; i < 9; i++) {
+			pr += rset[i];
+		}
+		pr = (partialCount - pr) / 7;
+		for (i = 9; i < 16; i++) {
+			rset_[i] = pr;
+		}
+		rset = rset_;
+	}
 	partialManager->setReserve(rset);
 }
 
 void Synth::refreshSystemChanAssign(unsigned int firstPart, unsigned int lastPart) {
 	memset(chantable, -1, sizeof(chantable));
 
+	// Fill out the Super channel map with any unmapped channels
+	if (useSuper) {
+		for (unsigned int i = 0, j = 0; i < 16 && j < 7; i++) {
+			unsigned int k;
+			for (k = 0; k < 9; k++) {
+				if (mt32ram.system.chanAssign[k] == i) break;
+			}
+			if (k == 9) {
+				if (chanAssignSuper[j] != i) {
+					parts[chanAssignSuper[j]]->allSoundOff();
+					parts[chanAssignSuper[j]]->resetAllControllers();
+				}
+				chanAssignSuper[j] = i;
+				j++;
+			}
+		}
+	}
+
 	// CONFIRMED: In the case of assigning a channel to multiple parts, the lower part wins.
-	for (unsigned int i = 0; i <= 8; i++) {
+	unsigned int numParts = useSuper ? 16 : 9;
+	for (unsigned int i = 0; i < numParts; i++) {
 		if (parts[i] != NULL && i >= firstPart && i <= lastPart) {
 			// CONFIRMED: Decay is started for all polys, and all controllers are reset, for every part whose assignment was touched by the sysex write.
 			parts[i]->allSoundOff();
 			parts[i]->resetAllControllers();
 		}
-		int chan = mt32ram.system.chanAssign[i];
+		int chan = i < 9 ? mt32ram.system.chanAssign[i] : chanAssignSuper[i - 9];
 		if (chan != 16 && chantable[chan] == -1) {
 			chantable[chan] = i;
 		}
@@ -1400,6 +1463,12 @@ void Synth::reset() {
 			parts[i]->setProgram(controlROMData[controlROMMap->programSettings + i]);
 		} else {
 			parts[8]->refresh();
+		}
+	}
+	if (useSuper) {
+		for (int i = 9; i < 16; i++) {
+			parts[i]->reset();
+			parts[i]->refresh();
 		}
 	}
 	refreshSystem();
@@ -1645,7 +1714,7 @@ void Synth::doRenderStreams(Sample *nonReverbLeft, Sample *nonReverbRight, Sampl
 }
 
 void Synth::printPartialUsage(unsigned long sampleOffset) {
-	unsigned int partialUsage[9];
+	unsigned int partialUsage[16];
 	partialManager->getPerPartPartialUsage(partialUsage);
 	if (sampleOffset > 0) {
 		printDebug("[+%lu] Partial Usage: 1:%02d 2:%02d 3:%02d 4:%02d 5:%02d 6:%02d 7:%02d 8:%02d R: %02d  TOTAL: %02d", sampleOffset, partialUsage[0], partialUsage[1], partialUsage[2], partialUsage[3], partialUsage[4], partialUsage[5], partialUsage[6], partialUsage[7], partialUsage[8], getPartialCount() - partialManager->getFreePartialCount());
@@ -1677,12 +1746,17 @@ bool Synth::isActive() const {
 	return false;
 }
 
+bool Synth::isSuper() const {
+	return useSuper;
+}
+
 unsigned int Synth::getPartialCount() const {
 	return partialCount;
 }
 
 void Synth::getPartStates(bool *partStates) const {
-	for (int partNumber = 0; partNumber < 9; partNumber++) {
+	int partCount = useSuper ? 16 : 9;
+	for (int partNumber = 0; partNumber < partCount; partNumber++) {
 		const Part *part = parts[partNumber];
 		partStates[partNumber] = part->getActiveNonReleasingPartialCount() > 0;
 	}
@@ -1702,7 +1776,8 @@ void Synth::getPartialStates(PartialState *partialStates) const {
 
 unsigned int Synth::getPlayingNotes(unsigned int partNumber, Bit8u *keys, Bit8u *velocities) const {
 	unsigned int playingNotes = 0;
-	if (isOpen && (partNumber < 9)) {
+	unsigned int partCount = useSuper ? 16 : 9;
+	if (isOpen && (partNumber < partCount)) {
 		const Part *part = parts[partNumber];
 		const Poly *poly = part->getFirstActivePoly();
 		while (poly != NULL) {
@@ -1716,11 +1791,13 @@ unsigned int Synth::getPlayingNotes(unsigned int partNumber, Bit8u *keys, Bit8u 
 }
 
 const char *Synth::getPatchName(unsigned int partNumber) const {
-	return (!isOpen || partNumber > 8) ? NULL : parts[partNumber]->getCurrentInstr();
+	unsigned int partCount = useSuper ? 16 : 9;
+	return (!isOpen || partNumber > partCount) ? NULL : parts[partNumber]->getCurrentInstr();
 }
 
 const Part *Synth::getPart(unsigned int partNum) const {
-	if (partNum > 8) {
+	unsigned int partCount = useSuper ? 16 : 9;
+	if (partNum > partCount) {
 		return NULL;
 	}
 	return parts[partNum];

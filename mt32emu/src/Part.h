@@ -82,6 +82,7 @@ public:
 	virtual ~Part();
 	void reset();
 	void setDataEntryMSB(unsigned char midiDataEntryMSB);
+	void setDataEntryLSB(unsigned char midiDataEntryLSB);
 	void setNRPN();
 	void setRPNLSB(unsigned char midiRPNLSB);
 	void setRPNMSB(unsigned char midiRPNMSB);
